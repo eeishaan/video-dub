@@ -12,7 +12,7 @@ from data.tokenizer import (
     TextTokenizer,
 )
 import torchaudio
-from edit_utils_en import parse_edit_en
+from edit_utils_en import parse_edit_en, extract_words
 from inference_scale import inference_one_sample
 
 from models import ssr
@@ -104,10 +104,39 @@ def get_mask_interval(data, word_span):
     return (start, end)
 
 
+def get_target_span(input_spans, operations, num_orig_words):
+    target_spans = []
+
+    span_offset = 0
+    op_offset = 0
+
+    for span in input_spans:
+        start_span, end_span = span
+        target_start = start_span + span_offset
+
+        if end_span + span_offset >= num_orig_words:
+            target_end = len(operations) - 1
+            target_spans.append((target_start, target_end))
+            continue
+
+        ops = operations[start_span + op_offset : end_span + op_offset]
+        op_offset += sum([1 for op in ops if op == "i"])
+
+        ops = operations[start_span + op_offset : end_span + op_offset]
+        span_offset += op_offset - sum([1 for op in ops if op == "d"])
+
+        target_end = end_span + span_offset
+
+        target_spans.append((target_start, target_end))
+
+    return target_spans
+
+
 def find_edits(orig_transcript, new_transcript, orig_audio):
 
     word_data = get_word_alignment(orig_audio, orig_transcript)
 
+    num_orig_words = len(extract_words(orig_transcript))
     operations, orig_spans = parse_edit_en(orig_transcript, new_transcript)
     # print(operations)
     # print("orig_spans: ", orig_spans)
@@ -157,7 +186,9 @@ def find_edits(orig_transcript, new_transcript, orig_audio):
     ]
     mask_interval = torch.LongTensor(mask_interval)  # [M,2], M==1 for now
 
-    return mask_interval, morphed_span
+    # Find the morphed span in new transcript
+    target_spans = get_target_span(orig_spans, operations, num_orig_words)
+    return mask_interval, target_spans
 
 
 def sample(
@@ -209,7 +240,7 @@ def sample(
 def main():
     audio_path = Path(__file__).parent / "ssr/demo/84_121550_000074_000000.wav"
     orig_transcript = "but when i had approached so near to them, the common object, which the sense deceives, lost not by distance any of its marks."
-    new_transcript = "but when i saw the mirage of the lake in the distance, which the sense deceives, lost not by distance any marks,"
+    new_transcript = "but when i saw the mirage of the lake in the distance, which the sense deceives, lost not by distance any marks or any project,"
 
     model_path = Path("/tmp/English.pth")
     codec_path = Path("/tmp/wmencodec.th")
@@ -219,7 +250,6 @@ def main():
     model, config, phn2num, audio_tokenizer, text_tokenizer = load_models(
         model_path, codec_path, device
     )
-
     with TemporaryDirectory() as temp_dir:
         temp_dir = Path(temp_dir)
         resampled_audio_path = temp_dir / "resampled_audio.wav"
@@ -231,6 +261,7 @@ def main():
         mask_interval, edited_spans = find_edits(
             orig_transcript, new_transcript, resampled_audio_path
         )
+        # print("edited spans", edited_spans)
 
         new_audio = sample(
             model,
@@ -244,10 +275,19 @@ def main():
             mask_interval,
             device,
         )
-    print("edited spans", edited_spans)
     out_path = Path(__file__).parent / "new_audio.wav"
     sf.write(out_path.as_posix(), new_audio.squeeze().numpy(), 16_000)
 
+    # Align new audio with new transcript
+    new_word_alignment = get_word_alignment(out_path, new_transcript)
+    # print(new_word_alignment, len(new_word_alignment))
+    edited_durations = []
+    for span in edited_spans:
+        start, end = span
+        edited_durations.append(
+            (new_word_alignment[start][0], new_word_alignment[end - 1][1])
+        )
+    # print("edited durations", edited_durations)
 
 if __name__ == "__main__":
     main()
