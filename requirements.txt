@@ -1,0 +1,16 @@
+git+https://github.com/WangHelin1997/SSR-Speech.git#subdirectory=audiocraft
+tensorboard==2.16.2
+phonemizer==3.2.1
+datasets==2.16.0
+torchmetrics==0.11.1
+huggingface_hub==0.22.2
+gradio==3.50.2
+nltk>=3.8.1
+openai-whisper>=20231117
+whisperx==3.2.0
+faster-whisper==1.0.0
+num2words==0.5.13
+opencc-python-reimplemented
+ctranslate2==4.4.0
+xformers==0.0.22
+textgrid
