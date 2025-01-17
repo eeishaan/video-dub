@@ -2,7 +2,7 @@ from pathlib import Path
 
 import sys
 
-sys.path.insert(0, (Path(__file__).parent.resolve() / "ssr").as_posix())
+sys.path.insert(0, "/workspace/ssr")
 
 import torch
 import torchaudio
@@ -46,17 +46,41 @@ def get_word_alignment(audio_file, transcript):
     with TemporaryDirectory() as tmpdir:
         transcript_file = Path(tmpdir) / "transcript.txt"
         transcript_file.write_text(transcript)
-        subprocess.check_output(
-            [
-                "mfa",
-                "align_one",
-                str(audio_file),
-                str(transcript_file),
-                "english_mfa",
-                "english_mfa",
-                tmpdir,
-            ]
-        )
+
+        try:
+            # Run command and capture both stdout and stderr
+            subprocess.run(
+                [
+                    "mfa",
+                    "align_one",
+                    str(audio_file),
+                    str(transcript_file),
+                    "english_mfa",
+                    "english_mfa",
+                    tmpdir,
+                    "--beam",
+                    "100",
+                    "--clean",
+                ],
+                check=True,  # Raise CalledProcessError on non-zero exit
+                text=True,  # Return strings instead of bytes
+                capture_output=True,  # Capture both stdout and stderr
+            )
+
+        except subprocess.CalledProcessError as e:
+            # Command failed - return the error output
+            print(e.stderr, e.stdout)
+            raise e
+            return False, e.stdout, e.stderr
+
+        except subprocess.SubprocessError as e:
+            # Other subprocess errors (like unable to start process)
+            raise e
+            return False, None, str(e)
+
+        except Exception as e:
+            # Unexpected errors
+            return False, None, f"Unexpected error: {str(e)}"
 
         tg_path = Path(tmpdir) / audio_file.with_suffix(".TextGrid").name
         data = textgrid_to_tuples(tg_path)
@@ -126,6 +150,8 @@ def get_target_span(input_spans, operations, num_orig_words):
         span_offset += op_offset - sum([1 for op in ops if op == "d"])
 
         target_end = end_span + span_offset
+        # print("span offset", span_offset)
+        target_end = max(target_start, target_end)
 
         target_spans.append((target_start, target_end))
 
@@ -137,6 +163,7 @@ def find_edits(orig_transcript, new_transcript, orig_audio):
     word_data = get_word_alignment(orig_audio, orig_transcript)
 
     num_orig_words = len(extract_words(orig_transcript))
+    assert len(word_data) == num_orig_words, f"{len(word_data)} != {num_orig_words}"
     operations, orig_spans = parse_edit_en(orig_transcript, new_transcript)
     # print(operations)
     # print("orig_spans: ", orig_spans)
@@ -161,15 +188,21 @@ def find_edits(orig_transcript, new_transcript, orig_audio):
         combined_spans = []
         current_span = spans[0]
 
+        merge_trail = []
+        curr_trail = [0]
         for i in range(1, len(spans)):
             next_span = spans[i]
             if current_span[1] >= next_span[0] - threshold:
                 current_span[1] = max(current_span[1], next_span[1])
+                curr_trail.append(i)
             else:
                 combined_spans.append(current_span)
                 current_span = next_span
+                merge_trail.append(curr_trail)
+                curr_trail = [i]
+        merge_trail.append(curr_trail)
         combined_spans.append(current_span)
-        return combined_spans
+        return combined_spans, merge_trail
 
     sub_amount = 0.12
     codec_sr = 50
@@ -177,7 +210,7 @@ def find_edits(orig_transcript, new_transcript, orig_audio):
         [max(start - sub_amount, 0), min(end + sub_amount, audio_dur)]
         for start, end in zip(starting_intervals, ending_intervals)
     ]  # in seconds
-    morphed_span = combine_spans(morphed_span, threshold=0.2)
+    morphed_span, merged_span_trail = combine_spans(morphed_span, threshold=0.2)
 
     # print("morphed_span: ", morphed_span)
 
@@ -188,7 +221,21 @@ def find_edits(orig_transcript, new_transcript, orig_audio):
 
     # Find the morphed span in new transcript
     target_spans = get_target_span(orig_spans, operations, num_orig_words)
-    return mask_interval, target_spans
+    combined_target_spans = []
+    combined_orig_spans = []
+    for merged_span in merged_span_trail:
+        combined_target_spans.append(
+            (target_spans[merged_span[0]][0], target_spans[merged_span[-1]][1])
+        )
+        combined_orig_spans.append(
+            (
+                word_data[orig_spans[merged_span[0]][0]][0],
+                word_data[orig_spans[merged_span[-1]][1]][0],
+            )
+            # (starting_intervals[merged_span[0]], ending_intervals[merged_span[-1]])
+        )
+    # print("target spans: ", combined_target_spans)
+    return mask_interval, combined_target_spans, combined_orig_spans
 
 
 def sample(
@@ -237,10 +284,7 @@ def sample(
     return new_audio
 
 
-def main():
-    audio_path = Path(__file__).parent / "ssr/demo/84_121550_000074_000000.wav"
-    orig_transcript = "but when i had approached so near to them, the common object, which the sense deceives, lost not by distance any of its marks."
-    new_transcript = "but when i saw the mirage of the lake in the distance, which the sense deceives, lost not by distance any marks or any project,"
+def main(input_audio_path, output_audio_path, orig_transcript, new_transcript):
 
     model_path = Path("/tmp/English.pth")
     codec_path = Path("/tmp/wmencodec.th")
@@ -253,12 +297,12 @@ def main():
     with TemporaryDirectory() as temp_dir:
         temp_dir = Path(temp_dir)
         resampled_audio_path = temp_dir / "resampled_audio.wav"
-        resample_audio(audio_path, resampled_audio_path)
+        resample_audio(input_audio_path, resampled_audio_path)
 
         orig_transcript = orig_transcript.lower().strip()
         new_transcript = new_transcript.lower().strip()
 
-        mask_interval, edited_spans = find_edits(
+        mask_interval, edited_spans, original_spans = find_edits(
             orig_transcript, new_transcript, resampled_audio_path
         )
         # print("edited spans", edited_spans)
@@ -275,19 +319,33 @@ def main():
             mask_interval,
             device,
         )
-    out_path = Path(__file__).parent / "new_audio.wav"
-    sf.write(out_path.as_posix(), new_audio.squeeze().numpy(), 16_000)
+    sf.write(output_audio_path.as_posix(), new_audio.squeeze().numpy(), 16_000)
 
     # Align new audio with new transcript
-    new_word_alignment = get_word_alignment(out_path, new_transcript)
+    new_word_alignment = get_word_alignment(output_audio_path, new_transcript)
     # print(new_word_alignment, len(new_word_alignment))
     edited_durations = []
     for span in edited_spans:
         start, end = span
         edited_durations.append(
-            (new_word_alignment[start][0], new_word_alignment[end - 1][1])
+            (new_word_alignment[start][0], new_word_alignment[end][0])
         )
     # print("edited durations", edited_durations)
 
+    return edited_durations, original_spans, new_audio.shape[-1] / 16_000
+
+
 if __name__ == "__main__":
-    main()
+    audio_path = Path(__file__).parent / "ssr/demo/84_121550_000074_000000.wav"
+    orig_transcript = "but when i had approached so near to them, the common object, which the sense deceives, lost not by distance any of its marks."
+    new_transcript = "but when i saw the mirage of the lake in the distance, which the sense deceives, lost not by distance any marks or any project,"
+    new_transcript = (
+        "but when i know which the sense deceives, lost not by distance any its marks"
+    )
+    out_path = Path(__file__).parent / "new_audio.wav"
+
+    target_span, input_span = main(
+        audio_path, out_path, orig_transcript, new_transcript
+    )
+    print("target_span", target_span)
+    print("input_span", input_span)
