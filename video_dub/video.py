@@ -4,20 +4,34 @@ from tempfile import TemporaryDirectory
 import subprocess
 import cv2
 import math
+import numpy as np
 
 
 def get_frame_number(time, fps):
-    return math.ceil(time * fps)
+    # return math.ceil(time * fps)
+    return round(time * fps)
 
 
-def read_n_next_frames(cap, n):
+def read_n_next_frames(cap, n, get_scores=False):
     frames = []
+    scores = [0]
+    prev_frame = None
     for _ in range(n):
         ret, frame = cap.read()
         if not ret:
             break
         frames.append(frame)
-    return frames
+        if get_scores and prev_frame is not None:
+            diff = cv2.absdiff(frame, prev_frame)
+            score = np.mean(diff)
+            scores.append(score)
+        prev_frame = frame
+
+    ret = frames
+    if get_scores:
+        ret = (frames, scores)
+
+    return ret
 
 
 def interpolate_frames(frame1, frame2, factor):
@@ -48,7 +62,6 @@ def gen_video_cv(
 
     final_frames = []
     prev_span_end = 0
-    span_idx = 0
     start_frame = 0
     end_frame = 0
     for orig_span, gen_span in zip(orig_audio_spans, gen_audio_spans):
@@ -62,28 +75,69 @@ def gen_video_cv(
             start_frame = end_frame
             end_frame = get_frame_number(orig_span_start, input_fps)
             final_frames.extend(read_n_next_frames(cap, end_frame - start_frame))
-            span_idx += 1
 
         prev_span_end = orig_span_end
         if gen_span_len <= 0.1:
+            start_frame = end_frame
+            end_frame = get_frame_number(orig_span_end, input_fps) - 1
+            read_n_next_frames(cap, end_frame - start_frame)
             continue
 
         # Edited section
         start_frame = end_frame
         if gen_span_len <= orig_span_len:
             # Reduce frames
-            end_frame = start_frame + get_frame_number(gen_span_len, input_fps) - 1
-            final_frames.extend(read_n_next_frames(cap, end_frame - start_frame))
-            read_n_next_frames(
-                cap, get_frame_number(orig_span_end, input_fps) - end_frame
-            )
+            # end_frame = start_frame + get_frame_number(gen_span_len, input_fps) - 1
+            # final_frames.extend(read_n_next_frames(cap, end_frame - start_frame))
+            # read_n_next_frames(
+            #     cap, get_frame_number(orig_span_end, input_fps) - end_frame
+            # )
             end_frame = get_frame_number(orig_span_end, input_fps) - 1
+            frames, frame_scores = read_n_next_frames(
+                cap, end_frame - start_frame, get_scores=True
+            )
+            print("red frames", len(frames))
+            print("frame scores", len(frame_scores))
+            frame_scores = frame_scores / np.max(frame_scores)
+            desired_frames = get_frame_number(gen_span_len, input_fps)
+            #  Select frames based on scores
+            selected_frames = [frames[0]]  # Always include first frame
+            total_score = np.sum(frame_scores)
+            frames_per_score = (
+                desired_frames - 2
+            ) / total_score  # -2 to reserve first and last frames
+
+            accumulated_frames = 0
+            for i, score in enumerate(frame_scores[1:-1], 1):
+                accumulated_frames += score * frames_per_score
+                if accumulated_frames >= 1:
+                    selected_frames.append(frames[i])
+                    accumulated_frames -= 1
+            selected_frames.append(frames[-1])  # Always include last frame
+            num_selected = len(selected_frames)
+            deficit = desired_frames - num_selected
+            if deficit > 0:
+                last_frame = selected_frames.pop(-1)
+                deficit_frames = []
+                for factor in range(deficit):
+                    deficit_frames.append(
+                        interpolate_frames(
+                            selected_frames[-1], last_frame, factor / deficit
+                        )
+                    )
+                selected_frames.extend(deficit_frames)
+                selected_frames.append(last_frame)
+            print("desired squeezed frames", desired_frames)
+            print("framed selected", len(selected_frames))
+            final_frames.extend(selected_frames)
         else:
             # Extend frames
             end_frame = get_frame_number(orig_span_end, input_fps) - 1
             snippet_frames = read_n_next_frames(cap, end_frame - start_frame)
-
             num_original_frames = len(snippet_frames)
+            print("desired frames", end_frame - start_frame)
+            print("read frames", num_original_frames)
+            print("total frames", len(final_frames), "max frames", total_frames)
             desired_frames = get_frame_number(gen_span_len, input_fps)
             num_interp_frames = int(desired_frames / (num_original_frames - 1))
             extended_snippet_frames = []
@@ -108,8 +162,6 @@ def gen_video_cv(
             print("extended frames", len(extended_snippet_frames))
             print("desired frame", desired_frames)
             final_frames.extend(extended_snippet_frames)
-
-        span_idx += 1
 
     if prev_span_end < video_duration:
         start_frame = end_frame  # get_frame_number(prev_span_end, input_fps)
@@ -190,14 +242,14 @@ def main(video_path, output_path, original_transcript, new_transcript):
 
 
 if __name__ == "__main__":
-    video_path = Path(__file__).parent.parent / "LatentSync/assets/demo5_video.mp4"
     video_path = Path(__file__).parent.parent / "LatentSync/assets/demo3_video.mp4"
     output_path = Path(__file__).parent / "out.mp4"
     original_transcript = "For a long time. Also this was the first time in disneyland for both of us. We've never been to disneyland in any other city. So, first of all, because we live in another city, we need to travel to Shanghai on Gaojia. It's a speed train that connects different cities in China."
     new_transcript = "For a long time. Also this was the first time in disneyland for both of us. We really like to travel and enjoy it a lot. So, first of all, because we live in another city, we need to travel to Shanghai on Gaojia. It's a super fast boat that connects different cities in China."
 
+    # video_path = Path(__file__).parent.parent / "LatentSync/assets/demo5_video.mp4"
     # original_transcript = "When I was a kid, I feel like you heard the thing, you heard the term, don't cry. you don't need to cry. crying is the most beautiful thing you can do. I encourage people to cry. I cry all the time. And I think it's the most healthy expression of how are you feeling and I, I sometimes wish."
-    # new_transcript = "When I was a kid, I feel like you heard the thing, you heard the term, don't cry. It was said again and again, but crying is the most beautiful thing you can do. I encourage people to cry. I cry all the time. And I think it's the most healthy expression of how are you feeling and I, I sometimes wish."
+    # new_transcript = "When I was a kid, I feel like you heard the thing, you heard the term, don't cry. It always kind of unsettling to me. crying is the most beautiful thing you can do. I encourage people to cry. It'a great habit after all. And I think it's the most healthy expression of how are you feeling and I, I sometimes wish."
 
     main(video_path, output_path, original_transcript, new_transcript)
 # ==================ddddd==i==sss==============================
