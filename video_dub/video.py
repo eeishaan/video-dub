@@ -3,55 +3,54 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import subprocess
 import cv2
+import math
 
 
-def get_video_duration(video_path):
+def get_frame_number(time, fps):
+    return math.ceil(time * fps)
+
+
+def read_n_next_frames(cap, n):
+    frames = []
+    for _ in range(n):
+        ret, frame = cap.read()
+        if not ret:
+            break
+        frames.append(frame)
+    return frames
+
+
+def interpolate_frames(frame1, frame2, factor):
     """
-    Get video duration using OpenCV.
-    Returns duration in seconds.
+    Create intermediate frames between two frames using linear interpolation.
+
+    Args:
+        frame1: First frame
+        frame2: Second frame
+        factor: Float between 0 and 1 indicating position between frames
     """
-    video = cv2.VideoCapture(video_path)
-    if not video.isOpened():
-        raise ValueError("Could not open video file")
-
-    # Get frame count and fps
-    frame_count = int(video.get(cv2.CAP_PROP_FRAME_COUNT))
-    fps = video.get(cv2.CAP_PROP_FPS)
-
-    # Calculate duration
-    duration = frame_count / fps
-
-    video.release()
-    return duration
+    return cv2.addWeighted(frame1, 1 - factor, frame2, factor, 0)
 
 
-def seconds_to_ffmpeg_time(seconds: float) -> str:
-    # round up to 3 decimal places
-    seconds = round(seconds, 4)
-    hours = int(seconds // 3600)
-    minutes = int((seconds % 3600) // 60)
-    seconds_remainder = seconds % 60
-
-    # Get milliseconds as integer
-    milliseconds = int((seconds_remainder % 1) * 1000)
-    seconds_int = int(seconds_remainder)
-
-    return f"{hours:02d}:{minutes:02d}:{seconds_int:02d}.{milliseconds:03d}"
-
-
-def gen_video(
+def gen_video_cv(
     input_path, output_path, gen_audio_spans, orig_audio_spans, target_audio_duration
 ):
-    final_span_files = []
-    final_span_commands = []
 
+    #  Open the video file
+    cap = cv2.VideoCapture(input_path)
+
+    # Get video properties
+    input_fps = int(cap.get(cv2.CAP_PROP_FPS))
+    frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    video_duration = total_frames / input_fps
+
+    final_frames = []
     prev_span_end = 0
-    temp_span_dir = Path(output_path).parent / "temp_spans"
-    temp_span_dir.mkdir(exist_ok=True, parents=True)
     span_idx = 0
-
-    video_duration = get_video_duration(input_path)
-
+    start_frame = 0
+    end_frame = 0
     for orig_span, gen_span in zip(orig_audio_spans, gen_audio_spans):
         orig_span_start, orig_span_end = orig_span
 
@@ -59,46 +58,69 @@ def gen_video(
         gen_span_len = gen_span[1] - gen_span[0]
 
         if orig_span_start > prev_span_end:
-            prev_span_file = temp_span_dir / f"span_{span_idx}.mp4"
-            final_span_files.append(prev_span_file)
-            final_span_commands.append(
-                f"ffmpeg -y -hide_banner -loglevel error -i {input_path} -ss {seconds_to_ffmpeg_time(prev_span_end)} -to {seconds_to_ffmpeg_time(orig_span_start)} -an {prev_span_file}"
-            )
+            # Unedited section. We take as much as frames as we can.
+            start_frame = end_frame
+            end_frame = get_frame_number(orig_span_start, input_fps)
+            final_frames.extend(read_n_next_frames(cap, end_frame - start_frame))
             span_idx += 1
 
         prev_span_end = orig_span_end
         if gen_span_len <= 0.1:
             continue
 
-        # Convert the original video to match the generated span len
-        mult_factor = gen_span_len / orig_span_len
-        gen_span_file = temp_span_dir / f"span_{span_idx}.mp4"
-        final_span_files.append(gen_span_file)
-        final_span_commands.append(
-            f"ffmpeg -y -hide_banner -loglevel error -i {input_path} -ss {seconds_to_ffmpeg_time(orig_span_start)} -to {seconds_to_ffmpeg_time(orig_span_end)} -filter:v 'setpts={mult_factor}*PTS' -c:v libx264 -preset veryslow -crf 17 -an {gen_span_file}"
-        )
+        # Edited section
+        start_frame = end_frame
+        if gen_span_len <= orig_span_len:
+            # Reduce frames
+            end_frame = start_frame + get_frame_number(gen_span_len, input_fps) - 1
+            final_frames.extend(read_n_next_frames(cap, end_frame - start_frame))
+            read_n_next_frames(
+                cap, get_frame_number(orig_span_end, input_fps) - end_frame
+            )
+            end_frame = get_frame_number(orig_span_end, input_fps) - 1
+        else:
+            # Extend frames
+            end_frame = get_frame_number(orig_span_end, input_fps) - 1
+            snippet_frames = read_n_next_frames(cap, end_frame - start_frame)
+
+            num_original_frames = len(snippet_frames)
+            desired_frames = get_frame_number(gen_span_len, input_fps)
+            num_interp_frames = int(desired_frames / (num_original_frames - 1))
+            extended_snippet_frames = []
+            for i in range(num_original_frames - 1):
+                frame1 = snippet_frames[i]
+                frame2 = snippet_frames[i + 1]
+
+                # Write the interpolated frames
+                if i == num_original_frames - 2:
+                    num_interp_frames = (
+                        desired_frames - 1 - len(extended_snippet_frames)
+                    )
+
+                for j in range(num_interp_frames):
+                    # Calculate interpolation factor
+                    factor = j / num_interp_frames
+
+                    # Create and write interpolated frame
+                    interp_frame = interpolate_frames(frame1, frame2, factor)
+                    extended_snippet_frames.append(interp_frame)
+            extended_snippet_frames.append(snippet_frames[-1])
+            print("extended frames", len(extended_snippet_frames))
+            print("desired frame", desired_frames)
+            final_frames.extend(extended_snippet_frames)
+
         span_idx += 1
 
     if prev_span_end < video_duration:
-        # mult_factor = (target_audio_duration - gen_span[1]) / (
-        # video_duration - prev_span_end
-        # )
-        prev_span_file = temp_span_dir / f"span_{span_idx}.mp4"
-        final_span_files.append(prev_span_file)
-        final_span_commands.append(
-            # f"ffmpeg -y -hide_banner -loglevel error -i {input_path} -ss {seconds_to_ffmpeg_time(prev_span_end)} -filter:v 'setpts={mult_factor}*PTS' -c:v libx264 -preset veryslow -crf 17 -an {prev_span_file}"
-            f"ffmpeg -y -hide_banner -loglevel error -i {input_path} -ss {seconds_to_ffmpeg_time(prev_span_end)} -to {seconds_to_ffmpeg_time(video_duration)} -an {prev_span_file}"
-        )
-
-    print(final_span_commands)
-    for command in final_span_commands:
-        subprocess.check_output(command, shell=True)
-
-    # Concatenate all the spans into the final video
-    concat_file = temp_span_dir / "concat.txt"
-    concat_file.write_text("\n".join([f"file '{f}'" for f in final_span_files]))
-    concat_command = f"ffmpeg -y -hide_banner -loglevel error -f concat -safe 0 -i {concat_file} -c copy {output_path}"
-    subprocess.check_output(concat_command, shell=True)
+        start_frame = end_frame  # get_frame_number(prev_span_end, input_fps)
+        end_frame = total_frames
+        final_frames.extend(read_n_next_frames(cap, end_frame - start_frame))
+    cap.release()
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    out = cv2.VideoWriter(output_path, fourcc, input_fps, (frame_width, frame_height))
+    for frame in final_frames:
+        out.write(frame)
+    out.release()
 
 
 def main(video_path, output_path, original_transcript, new_transcript):
@@ -136,7 +158,7 @@ def main(video_path, output_path, original_transcript, new_transcript):
 
         # Generate new video
         gen_video_path = output_path.parent / "gen_video.mp4"
-        gen_video(
+        gen_video_cv(
             video_path,
             gen_video_path,
             gen_audio_spans,
@@ -169,12 +191,13 @@ def main(video_path, output_path, original_transcript, new_transcript):
 
 if __name__ == "__main__":
     video_path = Path(__file__).parent.parent / "LatentSync/assets/demo5_video.mp4"
+    video_path = Path(__file__).parent.parent / "LatentSync/assets/demo3_video.mp4"
     output_path = Path(__file__).parent / "out.mp4"
-    # original_transcript = "For a long time. Also this was the first time in disneyland for both of us. We've never been to disneyland in any other city. So, first of all, because we live in another city, we need to travel to Shanghai on Gaojia. It's a speed train that connects different cities in China."
-    # new_transcript = "For a long time. Also this was not our first time in disneyland. We been to disneyland in another city. So, first of all, because we live in another city, we need to travel to Shanghai on Gaojia. It's a speed train that connects a lot of different cities in China."
+    original_transcript = "For a long time. Also this was the first time in disneyland for both of us. We've never been to disneyland in any other city. So, first of all, because we live in another city, we need to travel to Shanghai on Gaojia. It's a speed train that connects different cities in China."
+    new_transcript = "For a long time. Also this was the first time in disneyland for both of us. We really like to travel and enjoy it a lot. So, first of all, because we live in another city, we need to travel to Shanghai on Gaojia. It's a super fast boat that connects different cities in China."
 
-    original_transcript = "When I was a kid, I feel like you heard the thing, you heard the term, don't cry. you don't need to cry. crying is the most beautiful thing you can do. I encourage people to cry. I cry all the time. And I think it's the most healthy expression of how are you feeling and I, I sometimes wish."
-    new_transcript = "When I was a kid, I feel like you heard the thing, you heard the term, don't cry. It was said again and again, but crying is the most beautiful thing you can do. I encourage people to cry. I cry all the time. And I think it's the most healthy expression of how are you feeling and I, I sometimes wish."
+    # original_transcript = "When I was a kid, I feel like you heard the thing, you heard the term, don't cry. you don't need to cry. crying is the most beautiful thing you can do. I encourage people to cry. I cry all the time. And I think it's the most healthy expression of how are you feeling and I, I sometimes wish."
+    # new_transcript = "When I was a kid, I feel like you heard the thing, you heard the term, don't cry. It was said again and again, but crying is the most beautiful thing you can do. I encourage people to cry. I cry all the time. And I think it's the most healthy expression of how are you feeling and I, I sometimes wish."
 
     main(video_path, output_path, original_transcript, new_transcript)
 # ==================ddddd==i==sss==============================
