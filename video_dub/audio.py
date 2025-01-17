@@ -143,18 +143,26 @@ def get_target_span(input_spans, operations, num_orig_words):
             target_spans.append((target_start, target_end))
             continue
 
-        ops = operations[start_span + op_offset : end_span + op_offset]
-        op_offset += sum([1 for op in ops if op == "i"])
+        source_span_end = end_span + span_offset + 1
+        while source_span_end < len(operations) and (
+            operations[source_span_end] == "i" or operations[source_span_end] == "d"
+        ):
+            source_span_end += 1
+
+        ops = operations[start_span + op_offset : source_span_end]
+        new_op_offset = sum([1 for op in ops if op == "i"])
+        op_offset += new_op_offset
 
         ops = operations[start_span + op_offset : end_span + op_offset]
-        span_offset += op_offset - sum([1 for op in ops if op == "d"])
+        span_offset += new_op_offset - sum([1 for op in ops if op == "d"])
+        # print("inp", span)
+        # print("op offset", op_offset)
+        # print("span offset", span_offset)
 
         target_end = end_span + span_offset
         # print("span offset", span_offset)
         target_end = max(target_start, target_end)
-
         target_spans.append((target_start, target_end))
-
     return target_spans
 
 
@@ -325,12 +333,16 @@ def main(input_audio_path, output_audio_path, orig_transcript, new_transcript):
     new_word_alignment = get_word_alignment(output_audio_path, new_transcript)
     # print(new_word_alignment, len(new_word_alignment))
     edited_durations = []
+    edited_segments = []
     for span in edited_spans:
         start, end = span
         edited_durations.append(
             (new_word_alignment[start][0], new_word_alignment[end][0])
         )
-    # print("edited durations", edited_durations)
+        edited_segments.append(
+            (new_word_alignment[start][2], new_word_alignment[end - 1][2])
+        )
+    # print("edited segments", edited_segments)
 
     return edited_durations, original_spans, new_audio.shape[-1] / 16_000
 
