@@ -1,10 +1,10 @@
-# FROM pytorch/pytorch:2.4.1-cuda12.1-cudnn9-devel
 FROM pytorch/pytorch:2.2.2-cuda12.1-cudnn8-devel
 
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt update && apt install -y \
     git \
+    curl \
     wget \
     unzip \
     vim \
@@ -14,7 +14,8 @@ RUN apt update && apt install -y \
     && apt clean
 
 COPY requirements.txt /tmp/requirements.txt
-RUN pip install --no-cache-dir -r /tmp/requirements.txt
+RUN curl https://sh.rustup.rs -sSf | sh -s -- -y # required for orjson
+RUN . "$HOME/.cargo/env" && pip install --no-cache-dir -r /tmp/requirements.txt
 RUN wget https://huggingface.co/westbrook/SSR-Speech-English/resolve/main/English.pth?download=true -O /tmp/English.pth
 RUN wget https://huggingface.co/westbrook/SSR-Speech-English/resolve/main/wmencodec.th?download=true -O /tmp/wmencodec.th
 RUN wget https://huggingface.co/westbrook/SSR-Speech-English/resolve/main/vocab_en.txt -O /tmp/vocab_en.txt
