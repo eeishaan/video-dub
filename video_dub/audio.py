@@ -1,34 +1,45 @@
 from pathlib import Path
-
-import sys
-
-sys.path.insert(0, "/workspace/ssr")
-
 import torch
-import torchaudio
-from argparse import Namespace
-from data.tokenizer import (
-    AudioTokenizer,
-    TextTokenizer,
-)
-import torchaudio
-from edit_utils_en import parse_edit_en, extract_words
-from inference_scale import inference_one_sample
-
-from models import ssr
-
-from tempfile import TemporaryDirectory
-
 import subprocess
 import textgrid
 import librosa
 import soundfile as sf
+import torchaudio
+from tempfile import TemporaryDirectory
+from argparse import Namespace
+import torchaudio
+import sys
+
+sys.path.insert(0, "/workspace/ssr")
+from data.tokenizer import (
+    AudioTokenizer,
+    TextTokenizer,
+)
+from edit_utils_en import parse_edit_en, extract_words
+from inference_scale import inference_one_sample
+from models import ssr
+
+MODEL_PATH = Path("/tmp/English.pth")
+CODEC_PATH = Path("/tmp/wmencodec.th")
 
 
 def textgrid_to_tuples(tg_path):
+    """
+    Convert a TextGrid file to a list of tuples
+    Each tuple is of the form (start_time, end_time, word)
+
+    Parameters
+    ----------
+    tg_path : str
+        Path to the TextGrid file
+
+    Returns
+    -------
+    list
+        List of tuples
+    """
     tg = textgrid.TextGrid.fromFile(tg_path)
     data = []
-
     for tier in tg.tiers:
         if tier.name.lower() != "words":  # Assuming the tier name is 'words'
             continue
@@ -43,6 +54,21 @@ def textgrid_to_tuples(tg_path):
 
 
 def get_word_alignment(audio_file, transcript):
+    """
+    Align an audio file with a transcript using MFA
+
+    Parameters
+    ----------
+    audio_file : str
+        Path to the audio file
+    transcript : str
+        Transcript of the audio
+
+    Returns
+    -------
+    list
+        List of tuples
+    """
     with TemporaryDirectory() as tmpdir:
         transcript_file = Path(tmpdir) / "transcript.txt"
         transcript_file.write_text(transcript)
@@ -59,7 +85,7 @@ def get_word_alignment(audio_file, transcript):
                     "english_mfa",
                     tmpdir,
                     "--beam",
-                    "100",
+                    "10",
                     "--clean",
                 ],
                 check=True,  # Raise CalledProcessError on non-zero exit
@@ -71,16 +97,9 @@ def get_word_alignment(audio_file, transcript):
             # Command failed - return the error output
             print(e.stderr, e.stdout)
             raise e
-            return False, e.stdout, e.stderr
-
-        except subprocess.SubprocessError as e:
-            # Other subprocess errors (like unable to start process)
-            raise e
-            return False, None, str(e)
 
         except Exception as e:
-            # Unexpected errors
-            return False, None, f"Unexpected error: {str(e)}"
+            raise e
 
         tg_path = Path(tmpdir) / audio_file.with_suffix(".TextGrid").name
         data = textgrid_to_tuples(tg_path)
@@ -88,6 +107,23 @@ def get_word_alignment(audio_file, transcript):
 
 
 def load_models(model_path, codec_path, device):
+    """
+    Load the model and tokenizers
+
+    Parameters
+    ----------
+    model_path : str
+        Path to the model checkpoint
+    codec_path : str
+        Path to the codec file
+    device : str
+        Device to load the model on
+
+    Returns
+    -------
+    tuple
+        Tuple of the model, config, phn2num, audio_token
+    """
     # Initialize models
     ckpt = torch.load(model_path, map_location="cpu")
     model = ssr.SSR_Speech(ckpt["config"])
@@ -102,12 +138,39 @@ def load_models(model_path, codec_path, device):
 
 
 def resample_audio(audio, audio_out, target_sr=16_000):
-    # resampling audio to 16k Hz
+    """
+    Resample an audio file to `target_sr` and save it to `audio_out`
+
+    Parameters
+    ----------
+    audio : str
+        Path to the audio file
+    audio_out : str
+        Path to save the resampled audio
+    target_sr : int, optional
+        Target sample rate, by default 16_000
+    """
     audio, _ = librosa.load(str(audio), sr=target_sr)
     sf.write(str(audio_out), audio, target_sr)
 
 
 def get_mask_interval(data, word_span):
+    """
+    Get the start and end time of the mask interval.
+    Copied from SSR-Speech/inference_v2.py
+
+    Parameters
+    ----------
+    data : list
+        List of tuples
+    word_span : tuple
+        Tuple of the form (start, end)
+
+    Returns
+    -------
+    tuple
+        Tuple of the form (start, end)
+    """
     s, e = word_span[0], word_span[1]
     assert s <= e, f"s:{s}, e:{e}"
     assert s >= 0, f"s:{s}"
@@ -129,6 +192,25 @@ def get_mask_interval(data, word_span):
 
 
 def get_target_span(input_spans, operations, num_orig_words):
+    """
+    Maps spans in the input transcript to spans in the target transcript.
+
+    Parameters
+    ----------
+    input_spans : list
+        List of tuples
+    operations : list
+        List of edit operations performed on the input transcript to synthesize
+        the target transcript.
+    num_orig_words : int
+        Number of words in the original transcript
+
+    Returns
+    -------
+    list
+        List of tuples
+    """
+
     target_spans = []
 
     span_offset = 0
@@ -155,26 +237,44 @@ def get_target_span(input_spans, operations, num_orig_words):
 
         ops = operations[start_span + op_offset : end_span + op_offset]
         span_offset += new_op_offset - sum([1 for op in ops if op == "d"])
-        # print("inp", span)
-        # print("op offset", op_offset)
-        # print("span offset", span_offset)
-
         target_end = end_span + span_offset
-        # print("span offset", span_offset)
         target_end = max(target_start, target_end)
         target_spans.append((target_start, target_end))
     return target_spans
 
 
 def find_edits(orig_transcript, new_transcript, orig_audio):
+    """
+    Find edited portions in the original transcript.
+
+    Code borrowed from SSR-Speech/inference_v2.py
+
+    Parameters
+    ----------
+    orig_transcript : str
+        Original transcript text
+    new_transcript : str
+        New transcript text
+    orig_audio : str
+        Path to the original audio file
+
+    Returns
+    -------
+    mask_interval : torch.LongTensor
+        Mask interval in codec space for the edited portion
+    combined_target_spans : list
+        List of tuples containing the start and end indices of the
+        edited portion in the new transcript.
+    combined_orig_spans : list
+        List of tuples containing the start and end times of the
+        edited portion in the original audio.
+    """
 
     word_data = get_word_alignment(orig_audio, orig_transcript)
 
     num_orig_words = len(extract_words(orig_transcript))
     assert len(word_data) == num_orig_words, f"{len(word_data)} != {num_orig_words}"
     operations, orig_spans = parse_edit_en(orig_transcript, new_transcript)
-    # print(operations)
-    # print("orig_spans: ", orig_spans)
 
     if len(orig_spans) > 3:
         raise RuntimeError("Current model only supports maximum 3 editings")
@@ -185,8 +285,6 @@ def find_edits(orig_transcript, new_transcript, orig_audio):
         start, end = get_mask_interval(word_data, orig_span)
         starting_intervals.append(start)
         ending_intervals.append(end)
-
-    # print("intervals: ", starting_intervals, ending_intervals)
 
     info = torchaudio.info(orig_audio)
     audio_dur = info.num_frames / info.sample_rate
@@ -220,15 +318,15 @@ def find_edits(orig_transcript, new_transcript, orig_audio):
     ]  # in seconds
     morphed_span, merged_span_trail = combine_spans(morphed_span, threshold=0.2)
 
-    # print("morphed_span: ", morphed_span)
-
     mask_interval = [
         [round(span[0] * codec_sr), round(span[1] * codec_sr)] for span in morphed_span
     ]
     mask_interval = torch.LongTensor(mask_interval)  # [M,2], M==1 for now
 
-    # Find the morphed span in new transcript
+    # Map the edited spans in the original transcript to spans in new transcript
     target_spans = get_target_span(orig_spans, operations, num_orig_words)
+
+    # Find original span timings + merge target spans
     combined_target_spans = []
     combined_orig_spans = []
     for merged_span in merged_span_trail:
@@ -240,9 +338,7 @@ def find_edits(orig_transcript, new_transcript, orig_audio):
                 word_data[orig_spans[merged_span[0]][0]][0],
                 word_data[orig_spans[merged_span[-1]][1]][0],
             )
-            # (starting_intervals[merged_span[0]], ending_intervals[merged_span[-1]])
         )
-    # print("target spans: ", combined_target_spans)
     return mask_interval, combined_target_spans, combined_orig_spans
 
 
@@ -258,7 +354,9 @@ def sample(
     mask_interval,
     device,
 ):
-
+    """
+    Generate new audio
+    """
     decode_config = {
         "top_k": 0,
         "top_p": 0.8,
@@ -294,14 +392,16 @@ def sample(
 
 def main(input_audio_path, output_audio_path, orig_transcript, new_transcript):
 
-    model_path = Path("/tmp/English.pth")
-    codec_path = Path("/tmp/wmencodec.th")
+    model_path = MODEL_PATH
+    codec_path = CODEC_PATH
 
+    assert torch.cuda.is_available(), "CUDA is required for this script"
     device = "cuda"
 
     model, config, phn2num, audio_tokenizer, text_tokenizer = load_models(
         model_path, codec_path, device
     )
+
     with TemporaryDirectory() as temp_dir:
         temp_dir = Path(temp_dir)
         resampled_audio_path = temp_dir / "resampled_audio.wav"
@@ -313,7 +413,6 @@ def main(input_audio_path, output_audio_path, orig_transcript, new_transcript):
         mask_interval, edited_spans, original_spans = find_edits(
             orig_transcript, new_transcript, resampled_audio_path
         )
-        # print("edited spans", edited_spans)
 
         new_audio = sample(
             model,
@@ -327,11 +426,13 @@ def main(input_audio_path, output_audio_path, orig_transcript, new_transcript):
             mask_interval,
             device,
         )
+    # Write output audio
     sf.write(output_audio_path.as_posix(), new_audio.squeeze().numpy(), 16_000)
 
-    # Align new audio with new transcript
+    # Align new audio with new transcript. This is needed
+    # to get the start and end times of the edited portions. This is useful
+    # for video editing.
     new_word_alignment = get_word_alignment(output_audio_path, new_transcript)
-    # print(new_word_alignment, len(new_word_alignment))
     edited_durations = []
     edited_segments = []
     for span in edited_spans:
@@ -342,7 +443,10 @@ def main(input_audio_path, output_audio_path, orig_transcript, new_transcript):
         edited_segments.append(
             (new_word_alignment[start][2], new_word_alignment[end - 1][2])
         )
-    # print("edited segments", edited_segments)
+
+    # Free up memory
+    del model, audio_tokenizer, text_tokenizer
+    torch.cuda.empty_cache()
 
     return edited_durations, original_spans, new_audio.shape[-1] / 16_000
 
@@ -356,8 +460,9 @@ if __name__ == "__main__":
     )
     out_path = Path(__file__).parent / "new_audio.wav"
 
-    target_span, input_span = main(
+    target_span, input_span, duration = main(
         audio_path, out_path, orig_transcript, new_transcript
     )
     print("target_span", target_span)
     print("input_span", input_span)
+    print("duration", duration)
