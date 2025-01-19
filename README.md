@@ -74,3 +74,86 @@ Automatically edit talking-head style videos.
 ### Requirements
 1. Docker
 1. GPU with 25GB VRAM.
+
+## Assumptions and Limitations
+1. In cases where aligner fails to give us a tight alignment, the alignment for un-edited segments go out of sync.
+2. SSR-Speech can only handle upto 3 edited segments. We also observed slight degradation when working with longer audio.
+
+## Samples
+<table class="center">
+  <tr style="font-weight: bolder;text-align:center;">
+        <td><b>Original Transcript</b></td>
+        <td><b>New Transcript</b></td>
+        <td><b>Videos</b></td>
+  </tr>
+  <tr>
+    <td> For a long time. Also this was the first time in disneyland for both of us. We've never been to disneyland in any other city. So, first of all, because we live in another city, we need to travel to Shanghai on Gaojia. It's a speed train that connects different cities in China. </td>
+    <td> For a long time. Also this was the first time in disneyland for both of us. <b>We really like to travel and enjoy it alot.</b> So, first of all, because we live in another city, we need to travel to Shanghai on Gaojia. It's a speed train that connects different cities in China.</td>
+    <td style="text-align: center;">
+      <b>Original Video</b>
+      <video src=https://github.com/user-attachments/assets/819df100-64ca-4236-b7ac-18ecec0919a0 controls preload></video>
+      <b>Traditional Method</b>
+      <video src=https://github.com/user-attachments/assets/7fd927fd-b8b5-484e-8f6f-c85f89139e42 controls preload></video>
+      <b>Generative Method</b>
+      <video src=https://github.com/user-attachments/assets/0e27f10d-40ef-4335-92e8-e818dcabe5fb controls preload></video>
+    </td>
+  </tr>
+  <tr>
+    <td> For a long time. Also this was the first time in disneyland for both of us. We've never been to disneyland in any other city. So, first of all, because we live in another city, we need to travel to Shanghai on Gaojia. It's a speed train that connects different cities in China. </td>
+    <td> For a long time. Also this was <b>going to be a new day</b> in disneyland for both of us. We've never been to disneyland in any other city. So, first of all, because we live in another city, we need to travel to Shanghai on Gaojia. It's a <b>super fast train</b> that connects different cities in China.</td>
+    <td>
+      <b>Original Video</b>
+       <video src=https://github.com/user-attachments/assets/819df100-64ca-4236-b7ac-18ecec0919a0 controls preload></video>
+      <b>Traditional Method</b>
+      <video src=https://github.com/user-attachments/assets/be962c4d-f312-4040-9c68-8d3cffa6aefd controls preload></video>
+      <b>Generative Method</b>
+      <video src=https://github.com/user-attachments/assets/a95f2c96-0d3f-4fa8-a0b0-22f10097afe1 controls preload></video>
+    </td>
+  <tr>
+    <td> Still with me? Okay, now comes the fun part. Let's build you a wolf avatar. Youll be able to choose the fur colour, tail length, floppy or pointy ears. I choose floppy. And the colour of your liking. Great. Almost ready to go. Now that your wolf page is set up, it's time to invite your friends. So now click save. </td>
+    <td> Still with me? Okay, now comes the fun part. Let's build you a wolf avatar. Youll be able to choose the <b>size of the head and shape of the nose.</b> I choose floppy. And the colour of your liking. Great. Almost ready to go. Now that your wolf page is set up, it's time to invite your friends. So now click save. </td>
+    <td>
+        <b>Original Video</b>
+       <video height=100px src=https://github.com/user-attachments/assets/88df00ec-4965-43c9-aa28-7960b1c6d297 controls preload></video>
+      <b>Traditional Method</b>
+      <video src=https://github.com/user-attachments/assets/e9dfa0d1-dd54-42cb-923d-2e2a91db6b56 controls preload></video>
+      <b>Generative Method</b>
+      <video src=https://github.com/user-attachments/assets/62fc0efe-c533-4d42-bc92-a46ab37aacb0 controls preload></video>
+    </td>
+  </tr>
+  <tr>
+    <td> Still with me? Okay, now comes the fun part. Let's build you a wolf avatar. Youll be able to choose the fur colour, tail length, floppy or pointy ears. I choose floppy. And the colour of your liking. Great. Almost ready to go. Now that your wolf page is set up, it's time to invite your friends. So now click save. </td>
+    <td> Still with me? Okay, now comes the fun part. Let's build you a wolf avatar. Youll be able to choose the <b>size of the head and shape of the nose.</b> I choose floppy. And the colour of your liking. Great. <b>Now you are going to wait a little bit.</b> Now that your wolf page is set up, it's time to invite your friends. So now click save. </td>
+    <td>
+        <b>Original Video</b>
+       <video src=https://github.com/user-attachments/assets/88df00ec-4965-43c9-aa28-7960b1c6d297 controls preload></video>
+      <b>Traditional Method</b>
+      <video src=https://github.com/user-attachments/assets/668aa62c-d773-43b7-8120-dd1d8f825715 controls preload></video>
+      <b>Generative Method</b>
+      <video src=https://github.com/user-attachments/assets/26a738af-7399-4986-abc3-e851c8d49fd0 controls preload></video>
+    </td>
+  </tr>
+  <tr>
+    <td> Pretty silly. Little fucking fool. Now a word of caution. Do not ask people this if you are not fully ready to hear the answer. I was and am really down for criticism of myself as a human being because I want to be better. I am just naturally curious what people think of me. And I had the time to mentally prepare to hear their opinions without any defense </td>
+    <td> Pretty silly. Little fucking fool. <b>Let me give you some advice first.</b> Do not ask people this if you are not fully ready to hear the answer. I was and am really down for criticism of myself as a human being because I want to be better. I am just naturally curious what people think of me. And I had the time to mentally prepare to hear their opinions without any defense </td>
+    <td>
+        <b>Original Video</b>
+       <video src=https://github.com/user-attachments/assets/65a47e43-9f6c-4135-84f2-9dbd79c3a38a controls preload></video>
+      <b>Traditional Method</b>
+      <video src=https://github.com/user-attachments/assets/5db9cbd3-d3cc-43e5-81a4-128388ef62b0 controls preload></video>
+      <b>Generative Method</b>
+      <video src=https://github.com/user-attachments/assets/19bf7b5e-d3a8-4351-a83a-e441fe96cfcb controls preload></video>
+    </td>
+  </tr>
+  <tr>
+    <td> Pretty silly. Little fucking fool. Now a word of caution. Do not ask people this if you are not fully ready to hear the answer. I was and am really down for criticism of myself as a human being because I want to be better. I am just naturally curious what people think of me. And I had the time to mentally prepare to hear their opinions without any defense </td>
+    <td> Pretty silly. Little fucking fool. <b>Let me give you some advice first.</b> Do not ask people this if you are not fully ready to hear the answer. I was and am really down for criticism of myself as a human being because I want to be better. I am just naturally curious what people <b>have to say about me.</b> And I had the time to mentally prepare to hear their opinions without any defense </td>
+    <td>
+        <b>Original Video</b>
+       <video src=https://github.com/user-attachments/assets/65a47e43-9f6c-4135-84f2-9dbd79c3a38a controls preload></video>
+      <b>Traditional Method</b>
+       <video src=https://github.com/user-attachments/assets/2afb0b18-040f-451f-a426-e7391f8cf561 controls preload></video>
+      <b>Generative Method</b>
+       <video src=https://github.com/user-attachments/assets/27d506a7-1dad-43aa-a561-6090efac5fea controls preload></video>
+    </td>
+</table>
