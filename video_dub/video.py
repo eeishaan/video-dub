@@ -256,7 +256,6 @@ def gen_video_sync_lips(input_path, output_path, gen_audio_path, gen_audio_durat
         concat_file.write_text("\n".join(concat_content))
         concat_command = f"-f concat -safe 0 -i {concat_file} -c copy {temp_video_path}"
         commands = [revert_command, concat_command]
-        print("\n".join(commands))
         for command in commands:
             subprocess.check_output(
                 f"ffmpeg -y -hide_banner -loglevel error {command}", shell=True
@@ -277,6 +276,7 @@ def gen_video_sync_lips(input_path, output_path, gen_audio_path, gen_audio_durat
 
 
 def main(video_path, output_path, original_transcript, new_transcript, sync_lips=False):
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     with TemporaryDirectory() as tmp_dir:
         tmp_dir = Path(tmp_dir)
         input_audio_path = tmp_dir / "audio.wav"
@@ -343,7 +343,7 @@ def main(video_path, output_path, original_transcript, new_transcript, sync_lips
 
 
 if __name__ == "__main__":
-    argparser = ArgumentParser(help="Edit video based on new transcript")
+    argparser = ArgumentParser(description="Edit video based on new transcript")
     argparser.add_argument("--input_path", type=Path, required=True)
     argparser.add_argument("--output_path", type=Path, required=True)
     argparser.add_argument("--original_transcript", type=str, required=True)
